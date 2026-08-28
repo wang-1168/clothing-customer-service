@@ -1,144 +1,14 @@
-# 服装电商智能客服 RAG 系统
-import os
-import shutil
+"""前端应用模块 - Streamlit 界面与交互"""
 import json
 import time
-from urllib.parse import quote
 
 import streamlit as st
-from langchain_community.document_loaders import TextLoader
-from langchain_text_splitters import RecursiveCharacterTextSplitter
-from langchain_community.embeddings import DashScopeEmbeddings
-from langchain_community.vectorstores import Chroma
-from langchain_core.documents import Document
-from langchain_community.chat_models import ChatTongyi
-from langchain_core.prompts import ChatPromptTemplate
-from langchain_core.output_parsers import StrOutputParser
 
-CHROMA_DIR = "./chroma_db"
-COLLECTION = "clothing_knowledge"
-DATA_FILE = "data/clothing_knowledge.txt"
-API_KEY = os.getenv("OPEN_AI_API_KEY") or os.getenv("DASHSCOPE_API_KEY")
-
-# 胡桃主题背景图（text_to_image 生成，带浅色遮罩保证内容可读）
-_BG_PROMPT = ("Hu Tao from Genshin Impact, twin braids with red ribbons, plum blossom pupils, "
-               "red and black funeral parlor outfit, fire elemental magic, cute ghost companion, "
-               "dark elegant atmospheric background, anime key visual, high quality")
-BG_URL = (f"https://trae-api-cn.mchost.guru/api/ide/v1/text_to_image"
-          f"?prompt={quote(_BG_PROMPT)}&image_size=landscape_16_9")
-
-PROMPT_TEMPLATE = """你是一个专业的服装电商客服。根据参考资料回答顾客问题。
-要求：
-1. 只根据参考资料回答，不要编造
-2. 回答亲切友好，像真人客服
-3. 涉及尺码时给出具体建议
-4. 如果资料中没有，礼貌告知并建议联系人工客服
-
-参考资料：
-{context}
-
-顾客问题：{question}
-
-客服回答："""
+from config import DATA_FILE, BG_URL
+from vector_store import VectorStoreService
+from rag_service import RagService
 
 
-# ==================== 服务层 ====================
-class VectorStoreService:
-    SEPARATORS = ["\n\n", "\n", "。", "！", "？", " ", ""]
-
-    def __init__(self, chunk_size=300, chunk_overlap=30):
-        self.embeddings = DashScopeEmbeddings(model="text-embedding-v2", dashscope_api_key=API_KEY)
-        self.vector_store = None
-        self.chunk_size = chunk_size
-        self.chunk_overlap = chunk_overlap
-        self.last_chunk_count = 0
-
-    def _splitter(self):
-        return RecursiveCharacterTextSplitter(
-            chunk_size=self.chunk_size, chunk_overlap=self.chunk_overlap, separators=self.SEPARATORS)
-
-    def _persist(self, chunks):
-        self.vector_store = Chroma.from_documents(
-            chunks, self.embeddings, persist_directory=CHROMA_DIR, collection_name=COLLECTION)
-        self.last_chunk_count = len(chunks)
-        return len(chunks)
-
-    def build_from_file(self, file_path):
-        docs = TextLoader(file_path, encoding="utf-8").load()
-        n = self._persist(self._splitter().split_documents(docs))
-        print(f"向量库构建完成，共{n}个块")
-        return self.vector_store
-
-    def add_text(self, text, source="user_upload"):
-        chunks = self._splitter().split_documents([Document(page_content=text, metadata={"source": source})])
-        if self.vector_store is None:
-            self._persist(chunks)
-        else:
-            self.vector_store.add_documents(chunks)
-            self.last_chunk_count += len(chunks)
-        return len(chunks)
-
-    def load(self):
-        if not os.path.exists(CHROMA_DIR):
-            return None
-        self.vector_store = Chroma(persist_directory=CHROMA_DIR,
-                                   embedding_function=self.embeddings, collection_name=COLLECTION)
-        try:
-            self.last_chunk_count = self.vector_store._collection.count()
-        except Exception:
-            self.last_chunk_count = 0
-        return self.vector_store
-
-    def rebuild(self, file_path=DATA_FILE):
-        if os.path.exists(CHROMA_DIR):
-            shutil.rmtree(CHROMA_DIR)
-        self.vector_store = None
-        self.last_chunk_count = 0
-        return self.build_from_file(file_path)
-
-    def get_retriever(self, k=3):
-        return self.vector_store.as_retriever(search_kwargs={"k": k}) if self.vector_store else None
-
-    def status(self):
-        return {
-            "persist_dir": CHROMA_DIR, "collection": COLLECTION,
-            "loaded": self.vector_store is not None, "chunk_count": self.last_chunk_count,
-            "data_file_exists": os.path.exists(DATA_FILE),
-            "data_file_size": os.path.getsize(DATA_FILE) if os.path.exists(DATA_FILE) else 0,
-        }
-
-
-class RagService:
-    def __init__(self, retriever, model_name="qwen-plus", temperature=0.3):
-        self.retriever = retriever
-        self.chain = (
-            {"context": lambda x: x["context"], "question": lambda x: x["question"]}
-            | ChatPromptTemplate.from_template(PROMPT_TEMPLATE)
-            | ChatTongyi(model=model_name, temperature=temperature, dashscope_api_key=API_KEY)
-            | StrOutputParser()
-        )
-
-    def retrieve(self, question):
-        if not self.retriever:
-            return []
-        try:
-            return self.retriever.invoke(question)
-        except Exception as e:
-            print(f"检索失败: {e}")
-            return []
-
-    @staticmethod
-    def _fmt(docs):
-        return "\n\n".join(d.page_content for d in docs)
-
-    def answer(self, question, docs):
-        return self.chain.invoke({"context": self._fmt(docs), "question": question})
-
-    def stream_answer(self, question, docs):
-        yield from self.chain.stream({"context": self._fmt(docs), "question": question})
-
-
-# ==================== 前端应用 ====================
 class ChatApp:
     VERSION = "1.3.0"
     INIT_MSG = "您好！我是服装客服小助手 👕，可为您解答尺码、退换货、物流、面料洗护等问题，请问有什么可以帮您？"
@@ -536,18 +406,3 @@ class ChatApp:
         {self.PAGES[0]: self.render_chat, self.PAGES[1]: self.render_knowledge,
          self.PAGES[2]: self.render_settings, self.PAGES[3]: self.render_about
          }.get(self.page, self.render_chat)()
-
-
-def main():
-    st.set_page_config(page_title="服装智能客服", page_icon="👕",
-                       layout="wide", initial_sidebar_state="expanded")
-    st.markdown(ChatApp.CSS, unsafe_allow_html=True)
-    if not API_KEY:
-        st.error("未检测到 DashScope API Key，请设置环境变量 OPEN_AI_API_KEY 后重试。")
-        st.stop()
-    ChatApp.init_state()
-    ChatApp().run()
-
-
-if __name__ == "__main__":
-    main()

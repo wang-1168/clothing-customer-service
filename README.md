@@ -28,7 +28,11 @@
 
 ```
 服装智能客服/
-├── 文本转向量.py                # 主程序（含 ChatApp 封装）
+├── app.py                       # 入口文件
+├── chat_app.py                  # 前端应用（Streamlit 界面与交互）
+├── config.py                   # 配置常量（路径、API Key、提示词模板）
+├── vector_store.py              # 向量库服务（切分、向量化、检索）
+├── rag_service.py               # RAG 服务（检索 + 大模型生成）
 ├── data/
 │   └── clothing_knowledge.txt   # 知识库源文件（尺码/退换货/物流/洗护）
 ├── requirements.txt             # 依赖清单
@@ -59,7 +63,7 @@ set OPEN_AI_API_KEY=你的DashScope-Key
 export OPEN_AI_API_KEY=你的DashScope-Key
 
 # 4. 启动
-streamlit run 文本转向量.py
+streamlit run app.py
 ```
 
 浏览器自动打开 `http://localhost:8501`，首次启动会自动从 `data/clothing_knowledge.txt` 构建向量库。
